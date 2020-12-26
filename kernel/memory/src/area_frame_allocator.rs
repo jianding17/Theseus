@@ -327,7 +327,7 @@ pub struct StaticArrayStack<T> {
     len: usize,
 }
 
-
+/// Reference: https://stackoverflow.com/questions/29239586/how-can-i-create-a-stack-allocated-vector-like-container
 impl<T> StaticArrayStack<T> {
     pub fn new() -> StaticArrayStack<T> {
         StaticArrayStack {
