@@ -111,7 +111,7 @@ impl MapperSpillful {
             let mut allocator = allocator_ref.lock();
 
             for page in PageRange::from_virt_addr(vaddr, size).clone() {
-                let frame = allocator.allocate_frame().ok_or("MapperSpillful::map() -- out of memory trying to alloc frame")?;
+                let frame = allocator.allocate_frame(true).ok_or("MapperSpillful::map() -- out of memory trying to alloc frame")?;
                 let p3 = self.p4_mut().next_table_create(page.p4_index(), top_level_flags, &mut *allocator);
                 let p2 = p3.next_table_create(page.p3_index(), top_level_flags, &mut *allocator);
                 let p1 = p2.next_table_create(page.p2_index(), top_level_flags, &mut *allocator);

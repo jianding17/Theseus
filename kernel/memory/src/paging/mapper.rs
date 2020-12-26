@@ -180,7 +180,7 @@ impl Mapper {
         // top_level_flags.set(EntryFlags::WRITABLE, true); // is the same true for the WRITABLE bit?
 
         for page in pages.deref().clone() {
-            let frame = allocator.allocate_frame()
+            let frame = allocator.allocate_frame(true)
                 .ok_or("map_allocated_pages(): couldn't allocate new frame, out of memory!")?;
 
             let p3 = self.p4_mut().next_table_create(page.p4_index(), top_level_flags, allocator);
@@ -368,7 +368,7 @@ impl MappedPages {
 
     /// Remove the virtual memory mapping for the given `Page`s.
     /// This should NOT be public because it should only be invoked when a `MappedPages` object is dropped.
-    fn unmap<A>(&mut self, active_table_mapper: &mut Mapper, _allocator_ref: &MutexIrqSafe<A>) -> Result<(), &'static str> 
+    fn unmap<A>(&mut self, active_table_mapper: &mut Mapper, allocator_ref: &MutexIrqSafe<A>) -> Result<(), &'static str> 
         where A: FrameAllocator
     {
         if self.size_in_pages() == 0 { return Ok(()); }
@@ -380,13 +380,13 @@ impl MappedPages {
                 .and_then(|p2| p2.next_table_mut(page.p2_index()))
                 .ok_or("mapping code does not support huge pages")?;
             
-            let _frame = p1[page.p1_index()].pointed_frame().ok_or("unmap(): page not mapped")?;
+            let frame = p1[page.p1_index()].pointed_frame().ok_or("unmap(): page not mapped")?;
             p1[page.p1_index()].set_unused();
 
             tlb_flush_virt_addr(page.start_address());
             
             // TODO free p(1,2,3) table if empty
-            // _allocator_ref.lock().deallocate_frame(frame);
+            allocator_ref.lock().deallocate_frame(frame);
         }
     
         #[cfg(not(bm_map))]

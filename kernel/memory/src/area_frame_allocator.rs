@@ -10,7 +10,8 @@
 use super::{Frame, FrameAllocator, FrameRange, PhysicalAddress, PhysicalMemoryArea};
 use alloc::vec::Vec;
 use kernel_config::memory::PAGE_SIZE;
-
+use core::mem;
+use core::ptr;
 
 /// A stand-in for a Union
 pub enum VectorArray<T: Clone> {
@@ -51,11 +52,17 @@ impl<T: Clone> VectorArray<T> {
 /// already in use.
 ///
 /// `kernel_end` and `multiboot_end` are _inclusive_ bounds.
+/// # Arguments
+/// * `freed_frame_list`: a statically allocated stack that stores frame numbers of deallocated frames.     
+/// * `first_allocated_frame`: stores the fisrt frame that is allocated by the frame allocator. We need
+/// *     to avoid re-allocate this frame because it is used by the P4 page table 
 pub struct AreaFrameAllocator {
     next_free_frame: Frame,
     current_area: Option<PhysicalMemoryArea>,
     available: VectorArray<PhysicalMemoryArea>,
     occupied: VectorArray<PhysicalMemoryArea>,
+    freed_frame_list: StaticArrayStack<usize>,
+    first_allocated_frame: usize,
 }
 
 impl AreaFrameAllocator {
@@ -70,6 +77,8 @@ impl AreaFrameAllocator {
             current_area: None,
             available: VectorArray::Array((avail_len, available)),
             occupied: VectorArray::Array((occ_len, occupied)),
+            freed_frame_list: StaticArrayStack::new(),
+            first_allocated_frame: 0,
         };
         allocator.select_next_area();
         Ok(allocator)
@@ -177,6 +186,33 @@ impl AreaFrameAllocator {
             self.skip_occupied_frames();
         }
     }
+
+    /// Determines whether or not the current `frame` is within any occupied memory area
+    fn in_occupided_area(&self, frame: Frame) -> bool {
+        match self.occupied {
+            VectorArray::Array((len, ref arr)) => {
+                for area in arr.iter().take(len) {
+                    let start = Frame::containing_address(area.base_addr);
+                    let end = Frame::containing_address(area.base_addr + area.size_in_bytes);
+                    if frame >= start && frame <= end {
+                        // trace!("AreaFrameAllocator: deallocation ingore frame {:?} is in occupied area", frame.number);
+                        return true;
+                    }
+                }
+            }
+            VectorArray::Vector(ref v) => {
+                for area in v.iter() {
+                    let start = Frame::containing_address(area.base_addr);
+                    let end = Frame::containing_address(area.base_addr + area.size_in_bytes);
+                    if frame >= start && frame <= end { 
+                        // trace!("AreaFrameAllocator: deallocation ingore frame {:?} is in occupied area", frame.number);
+                        return true;
+                    }
+                }
+            }
+        };
+        return false;
+    }
 }
 
 impl FrameAllocator for AreaFrameAllocator {
@@ -186,13 +222,13 @@ impl FrameAllocator for AreaFrameAllocator {
 
         // this is just a shitty way to get contiguous frames, since right now it's really easy to get them
         // it wastes the frames that are allocated 
-
-        if let Some(first_frame) = self.allocate_frame() {
+        // When contiguous frames are desired, set `use_freed_frames` to false to avoid allocating frames from previously deallocated frames
+        if let Some(first_frame) = self.allocate_frame(false) {
             let first_frame_paddr = first_frame.start_address();
 
             // here, we successfully got the first frame, so try to allocate the rest
             for i in 1..num_frames {
-                if let Some(f) = self.allocate_frame() {
+                if let Some(f) = self.allocate_frame(false) {
                     if f.start_address() == (first_frame_paddr + (i * PAGE_SIZE)) {
                         // still getting contiguous frames, so we're good
                         continue;
@@ -219,8 +255,14 @@ impl FrameAllocator for AreaFrameAllocator {
     }
 
 
-    fn allocate_frame(&mut self) -> Option<Frame> {
-        if let Some(area) = self.current_area {
+    /// Allocate a frame from either previously deallocated frames or next free frame in the available area
+    fn allocate_frame(&mut self, use_freed_frames: bool) -> Option<Frame> {
+        if use_freed_frames && self.freed_frame_list.len > 0 {
+            let frame_number = self.freed_frame_list.pop_back().unwrap();
+            debug!("allocate frame {:?} from freed list with {:?} elements", frame_number, self.freed_frame_list.len + 1);
+            return Some(Frame { number: frame_number})
+                
+        } else if let Some(area) = self.current_area {
             // first, see if we need to skip beyond the current area (it may be already occupied)
             self.skip_occupied_frames();
 
@@ -238,13 +280,18 @@ impl FrameAllocator for AreaFrameAllocator {
                 // all frames of current area are used, switch to next area
                 self.select_next_area();
             } else {
+                // debug!("allocate frame {:?}", frame.number);
+                if self.first_allocated_frame == 0 {
+                    self.first_allocated_frame = frame.number;
+                }
                 // frame is unused, increment `next_free_frame` and return it
                 self.next_free_frame += 1;
                 // trace!("AreaFrameAllocator: allocated frame {:?}", frame);
                 return Some(frame);
             }
             // `frame` was not valid, try it again with the updated `next_free_frame`
-            self.allocate_frame()
+            debug!("allocate frame from next area");
+            self.allocate_frame(false)
         } else {
             error!("FATAL ERROR: AreaFrameAllocator: out of physical memory!!!");
             None // no free frames left
@@ -252,8 +299,18 @@ impl FrameAllocator for AreaFrameAllocator {
     }
 
     
-    fn deallocate_frame(&mut self, _frame: Frame) {
-        unimplemented!()
+    /// Recycle a deallocated frame into freed_frame_list for future allocation 
+    /// if the frame is not in occupied area and it is not the first frame being allocated
+    /// which is used for page table recursive mapping
+    fn deallocate_frame(&mut self, frame: Frame) {
+        if !self.in_occupided_area(frame) && frame.number != self.first_allocated_frame {    
+            if frame.number == self.next_free_frame.number {
+                self.next_free_frame -= 1;
+            } else {
+                unsafe {self.freed_frame_list.push_back(frame.number)};
+            }
+            debug!("deallocate frame: {:?}, next free frame: {:?}, length of freed_frame_list: {:?}", frame.number, self.next_free_frame.number,  self.freed_frame_list.len);
+        }
     }
 
 
@@ -263,3 +320,40 @@ impl FrameAllocator for AreaFrameAllocator {
         self.occupied.upgrade_to_vector();
     }
 }
+
+/// A statically allocated stack implemented from array.
+pub struct StaticArrayStack<T> {
+    arr: [T; 128],
+    len: usize,
+}
+
+
+impl<T> StaticArrayStack<T> {
+    pub fn new() -> StaticArrayStack<T> {
+        StaticArrayStack {
+            arr: unsafe { mem::zeroed() },
+            len: 0,
+        }
+    }
+    /// Push the given `value` onto the end of the array.
+    pub unsafe fn push_back(&mut self, value: T) {
+        if self.len < self.arr.len() {
+            ptr::write(self.arr.as_mut_ptr().offset(self.len as isize), value);
+            self.len += 1;
+        } else {
+            warn!("Out of space in array with size {:?}, failed to insert {:?}th value.", self.arr.len(), self.len);
+        }
+    }
+
+    /// Pop the value at the tail of the array.
+    pub fn pop_back(&mut self) -> Option<T> {
+        if self.len == 0 {
+            None
+        } else {
+                self.len -= 1; 
+                return Some(unsafe {ptr::read(self.arr.get(self.len).unwrap())})
+        }
+
+    }
+}
+

@@ -73,7 +73,7 @@ impl TinyAllocator {
 }
 
 impl FrameAllocator for TinyAllocator {
-    fn allocate_frame(&mut self) -> Option<Frame> {
+    fn allocate_frame(&mut self, _use_freed_frames: bool) -> Option<Frame> {
         for frame_option in &mut self.0 {
             if frame_option.is_some() {
                 return frame_option.take();

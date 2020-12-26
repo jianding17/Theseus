@@ -82,7 +82,7 @@ pub fn get_frame_allocator_ref() -> Option<&'static FrameAllocatorRef<AreaFrameA
 
 /// Convenience method for allocating a new Frame.
 pub fn allocate_frame() -> Option<Frame> {
-    FRAME_ALLOCATOR.try().and_then(|fa| fa.lock().allocate_frame())
+    FRAME_ALLOCATOR.try().and_then(|fa| fa.lock().allocate_frame(true))
 }
 
 /// Convenience method for allocating several contiguous Frames.
@@ -276,7 +276,8 @@ pub fn init_post_heap(page_table: PageTable, mut higher_half_mapped_pages: [Opti
 }
 
 pub trait FrameAllocator {
-    fn allocate_frame(&mut self) -> Option<Frame>;
+    /// `use_freed_frames` is added to indicate whether the frame allocator should allocate frames from previously deallocated frames.
+    fn allocate_frame(&mut self, use_freed_frames: bool) -> Option<Frame>;
     fn allocate_frames(&mut self, num_frames: usize) -> Option<FrameRange>;
     fn deallocate_frame(&mut self, frame: Frame);
     /// Call this when a heap is set up, and the `alloc` types can be used.

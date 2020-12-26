@@ -207,7 +207,7 @@ pub fn init(
     let (new_frame, temp_frames1, temp_frames2) = {
         let mut allocator = allocator_mutex.lock();
         // a quick closure to allocate one frame
-        let mut alloc_frame = || allocator.allocate_frame().ok_or("couldn't allocate frame"); 
+        let mut alloc_frame = || allocator.allocate_frame(false).ok_or("couldn't allocate frame"); 
         (
             alloc_frame()?,
             (alloc_frame()?, alloc_frame()?, alloc_frame()?),
